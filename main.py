@@ -63,3 +63,18 @@ def list_news():
     cur.close()
     conn.close()
     return rows
+@app.get("/news/add")
+def add_news():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO news (title, content) VALUES (%s, %s);",
+        (
+            "Löwen Frankfurt gewinnen 4:2",
+            "Starkes Heimspiel in der DEL, wichtige drei Punkte.",
+        )
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"news": "added ✅"}
