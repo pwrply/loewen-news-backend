@@ -86,9 +86,11 @@ def add_news():
 
 import feedparser
 
+import feedparser
+
 @app.get("/rss/import")
 def import_rss():
-    FEED_URL = "https://www.heise.de/rss/heise-atom.xml"  # 🔁 HIER SPÄTER ECHTE QUELLE EINTRAGEN
+    FEED_URL = "https://www.heise.de/rss/heise-atom.xml"
 
     feed = feedparser.parse(FEED_URL)
 
@@ -96,32 +98,48 @@ def import_rss():
     cur = conn.cursor()
 
     inserted = 0
+    skipped = 0
 
     for entry in feed.entries:
-        title = entry.get("title", "").strip()
-        summary = entry.get("summary", "").strip()
+        title = (entry.get("title") or "").strip()
         link = entry.get("link")
 
+        # 🔹 Inhalt robust holen
+        content = (
+            entry.get("summary")
+            or entry.get("description")
+            or (
+                entry.get("content")[0].get("value")
+                if entry.get("content") else ""
+            )
+            or ""
+        )
+        content = content.strip()
+
         if not title or not link:
+            skipped += 1
             continue
 
-        try:
-            cur.execute(
-                """
-                INSERT INTO news (title, content, source_url)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (source_url) DO NOTHING;
-                """,
-                (title, summary, link),
-            )
-            if cur.rowcount > 0:
-                inserted += 1
-        except Exception:
-            conn.rollback()
-            continue
+        cur.execute(
+            """
+            INSERT INTO news (title, content, source_url)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (source_url) DO NOTHING;
+            """,
+            (title, content, link),
+        )
+
+        if cur.rowcount > 0:
+            inserted += 1
+        else:
+            skipped += 1
 
     conn.commit()
     cur.close()
     conn.close()
 
-    return {"rss_imported": inserted}
+    return {
+        "feed_entries": len(feed.entries),
+        "inserted": inserted,
+        "skipped": skipped,
+    }
