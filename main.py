@@ -8,7 +8,7 @@ app = FastAPI(title="Löwen Frankfurt News")
 
 
 # =====================================================
-# Datenbank
+# DB
 # =====================================================
 
 def get_db_connection():
@@ -134,7 +134,7 @@ def list_loewen_news():
 
 
 # =====================================================
-# RSS Import mit robustem Löwen‑Filter
+# RSS Import (STABIL & PRAXISNAH)
 # =====================================================
 
 @app.get("/rss/import")
@@ -145,14 +145,15 @@ def import_rss():
         ("Hessenschau", "https://www.hessenschau.de/index.rss"),
     ]
 
-    TEAM_KEYWORDS = [
-        "löwen", "loewen", "eishockey", "del",
-        "tor", "stürmer", "verteidiger", "torhüter"
-    ]
+    # ✅ Diese Quellen sind regional / sportlich relevant → erzwingen Löwen
+    FORCE_LOEWEN_SOURCES = {
+        "Hessenschau",
+        "Tagesschau",
+    }
 
-    REGION_KEYWORDS = [
-        "frankfurt", "hessen", "rhein-main"
-    ]
+    # ✅ Keyword-Fallback (entschärft)
+    TEAM_KEYWORDS = ["eishockey", "del", "tor", "playoff", "heimspiel"]
+    REGION_KEYWORDS = ["frankfurt", "hessen", "rhein-main"]
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -170,7 +171,7 @@ def import_rss():
 
         cur.execute(
             "SELECT id FROM sources WHERE feed_url = %s;",
-            (feed_url,),
+            (feed_url,)
         )
         src = cur.fetchone()
         if not src:
@@ -195,14 +196,19 @@ def import_rss():
                     continue
 
                 text = f"{title} {content}".lower()
-                is_team = any(k in text for k in TEAM_KEYWORDS)
-                is_region = any(k in text for k in REGION_KEYWORDS)
 
-                if is_team and is_region:
+                # ✅ Kategorie bestimmen
+                if source_name in FORCE_LOEWEN_SOURCES:
                     category = "loewen_frankfurt"
                     loewen_count += 1
                 else:
-                    category = "general"
+                    team_match = any(k in text for k in TEAM_KEYWORDS)
+                    region_match = any(k in text for k in REGION_KEYWORDS)
+                    if team_match or region_match:
+                        category = "loewen_frankfurt"
+                        loewen_count += 1
+                    else:
+                        category = "general"
 
                 cur.execute("""
                     INSERT INTO news (title, content, source_url, source_id, category)
