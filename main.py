@@ -2,9 +2,14 @@ from fastapi import FastAPI
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import feedparser
 
 app = FastAPI(title="Löwen Frankfurt News")
 
+
+# ---------------------------
+# Datenbank-Verbindung
+# ---------------------------
 
 def get_db_connection():
     return psycopg2.connect(
@@ -13,11 +18,15 @@ def get_db_connection():
     )
 
 
+# ---------------------------
+# Basis-Routen
+# ---------------------------
+
 @app.get("/")
 def root():
     return {
         "app": "Löwen Frankfurt News",
-        "message": "Backend läuft!"
+        "message": "Backend läuft ✅"
     }
 
 
@@ -36,12 +45,17 @@ def db_test():
         return {"database": "error ❌", "detail": str(e)}
 
 
+# ---------------------------
+# Datenbank-Setup
+# ---------------------------
+
 @app.get("/setup")
 def setup():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS news (
             id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
@@ -49,46 +63,67 @@ def setup():
             source_url TEXT UNIQUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-    """)
+        """
+    )
 
     conn.commit()
     cur.close()
     conn.close()
+
     return {"setup": "news table ready ✅"}
 
+
+# ---------------------------
+# News anzeigen
+# ---------------------------
 
 @app.get("/news")
 def list_news():
     conn = get_db_connection()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM news ORDER BY created_at DESC;")
+
+    cur.execute(
+        "SELECT * FROM news ORDER BY created_at DESC;"
+    )
     rows = cur.fetchall()
+
     cur.close()
     conn.close()
     return rows
-    
+
+
+# ---------------------------
+# Test-News (für App-Button)
+# ---------------------------
+
 @app.get("/news/add")
 def add_news():
     conn = get_db_connection()
     cur = conn.cursor()
+
     cur.execute(
-        "INSERT INTO news (title, content, source_url) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
+        """
+        INSERT INTO news (title, content, source_url)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (source_url) DO NOTHING;
+        """,
         (
             "Test News aus der App",
-            "Diese News wurde aus der iOS App ausgelöst.",
+            "Diese News wurde über die iOS-App hinzugefügt.",
             None,
-        )
+        ),
     )
+
     conn.commit()
     cur.close()
     conn.close()
+
     return {"news": "added ✅"}
 
-import feedparser
 
-import feedparser
-
-import feedparser
+# ---------------------------
+# RSS-Import (crash-sicher)
+# ---------------------------
 
 @app.get("/rss/import")
 def import_rss():
@@ -107,7 +142,6 @@ def import_rss():
             title = (entry.get("title") or "").strip()
             link = entry.get("link")
 
-            # ✅ Inhalt robust bestimmen
             content = ""
             if "summary" in entry:
                 content = entry.summary
@@ -126,3 +160,28 @@ def import_rss():
 
             cur.execute(
                 """
+                INSERT INTO news (title, content, source_url)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (source_url) DO NOTHING;
+                """,
+                (title, content, link),
+            )
+
+            if cur.rowcount > 0:
+                inserted += 1
+            else:
+                skipped += 1
+
+        except Exception:
+            skipped += 1
+            continue
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {
+        "feed_entries": len(feed.entries),
+        "inserted": inserted,
+        "skipped": skipped,
+    }
