@@ -3,12 +3,15 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import feedparser
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
 
 app = FastAPI(title="Löwen Frankfurt News")
 
 
 # =====================================================
-# DB Connection
+# DB
 # =====================================================
 
 def get_db_connection():
@@ -19,20 +22,7 @@ def get_db_connection():
 
 
 # =====================================================
-# Health
-# =====================================================
-
-@app.get("/")
-def root():
-    return {"app": "Löwen Frankfurt News", "status": "running ✅"}
-
-@app.get("/health")
-def health():
-    return {"ok": True}
-
-
-# =====================================================
-# Setup + Migration (idempotent)
+# Setup
 # =====================================================
 
 @app.get("/setup")
@@ -44,7 +34,7 @@ def setup():
         CREATE TABLE IF NOT EXISTS sources (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
-            feed_url TEXT UNIQUE NOT NULL
+            source_url TEXT UNIQUE
         );
     """)
 
@@ -52,65 +42,35 @@ def setup():
         CREATE TABLE IF NOT EXISTS news (
             id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            content TEXT,
             source_url TEXT UNIQUE,
             source_id INTEGER,
-            category TEXT
+            category TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
 
     conn.commit()
     cur.close()
     conn.close()
-
     return {"setup": "ok ✅"}
 
 
 # =====================================================
-# News API
+# API
 # =====================================================
-
-@app.get("/news")
-def list_news():
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT
-            news.id,
-            news.title,
-            news.content,
-            news.created_at,
-            news.category,
-            sources.name AS source_name
-        FROM news
-        LEFT JOIN sources ON news.source_id = sources.id
-        ORDER BY news.created_at DESC;
-    """)
-
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
 
 @app.get("/news/loewen")
-def list_loewen_news():
+def loewen_news():
     conn = get_db_connection()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT
-            news.id,
-            news.title,
-            news.content,
-            news.created_at,
-            sources.name AS source_name
+        SELECT news.*, sources.name AS source_name
         FROM news
         LEFT JOIN sources ON news.source_id = sources.id
-        WHERE news.category = 'loewen_frankfurt'
-        ORDER BY news.created_at DESC;
+        WHERE category = 'loewen_frankfurt'
+        ORDER BY created_at DESC
     """)
 
     rows = cur.fetchall()
@@ -120,82 +80,125 @@ def list_loewen_news():
 
 
 # =====================================================
-# RSS Import – NUR team-spezifische Feeds
+# RSS + SCRAPE IMPORT
 # =====================================================
 
 @app.get("/rss/import")
-def import_rss():
-    """
-    Alle diese Feeds sind EXPLIZIT zu den Löwen Frankfurt.
-    → Kategorie wird immer erzwungen.
-    """
-
-    FEEDS = [
-        (
-            "sport.de – Löwen Frankfurt",
-            "https://www.sport.de/rss/news/te2940/loewen-frankfurt/",
-        ),
-        (
-            "Eishockey NEWS – Löwen Frankfurt",
-            "https://www.eishockeynews.de/rss/loewen-frankfurt",
-        ),
-    ]
+def import_all():
 
     conn = get_db_connection()
     cur = conn.cursor()
 
     inserted = 0
-    processed = 0
 
-    for source_name, feed_url in FEEDS:
-        # Quelle anlegen
-        cur.execute("""
-            INSERT INTO sources (name, feed_url)
-            VALUES (%s, %s)
-            ON CONFLICT (feed_url) DO NOTHING;
-        """, (source_name, feed_url))
+    # =================================================
+    # PHASE 1 – Team-RSS
+    # =================================================
+    TEAM_FEEDS = [
+        ("sport.de – Löwen Frankfurt",
+         "https://www.sport.de/rss/news/te2940/loewen-frankfurt/"),
+        ("Eishockey NEWS – Löwen Frankfurt",
+         "https://www.eishockeynews.de/del/loewen-frankfurt"),
+    ]
 
+    for name, url in TEAM_FEEDS:
         cur.execute(
-            "SELECT id FROM sources WHERE feed_url = %s;",
-            (feed_url,)
+            "INSERT INTO sources (name, source_url) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+            (name, url)
         )
-        source_id = cur.fetchone()["id"]
+        cur.execute("SELECT id FROM sources WHERE source_url=%s", (url,))
+        sid = cur.fetchone()["id"]
 
-        feed = feedparser.parse(feed_url)
-
-        for entry in feed.entries:
-            title = (entry.get("title") or "").strip()
-            link = entry.get("link")
-            content = (
-                entry.get("summary")
-                or entry.get("description")
-                or ""
-            ).strip()
+        feed = feedparser.parse(url)
+        for e in feed.entries:
+            title = (e.get("title") or "").strip()
+            link = e.get("link")
+            content = (e.get("summary") or "").strip()
 
             if not title or not link:
                 continue
 
-            # 🔥 Kategorie direkt setzen
-            category = "loewen_frankfurt"
+            cur.execute("""
+                INSERT INTO news (title, content, source_url, source_id, category)
+                VALUES (%s,%s,%s,%s,'loewen_frankfurt')
+                ON CONFLICT (source_url)
+                DO UPDATE SET category='loewen_frankfurt'
+            """, (title, content, link, sid))
+            inserted += cur.rowcount
+
+    # =================================================
+    # PHASE 2 – Eisblog (RSS + Filter)
+    # =================================================
+    BLOG_FEEDS = [("Eisblog", "https://eisblog.media/feed/")]
+    KEYWORDS = ["löwen", "loewen", "frankfurt"]
+
+    for name, url in BLOG_FEEDS:
+        cur.execute(
+            "INSERT INTO sources (name, source_url) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+            (name, url)
+        )
+        cur.execute("SELECT id FROM sources WHERE source_url=%s", (url,))
+        sid = cur.fetchone()["id"]
+
+        feed = feedparser.parse(url)
+        for e in feed.entries:
+            title = (e.get("title") or "").strip()
+            link = e.get("link")
+            content = (e.get("summary") or "").strip()
+
+            text = f"{title} {content}".lower()
+            if not any(k in text for k in KEYWORDS):
+                continue
 
             cur.execute("""
                 INSERT INTO news (title, content, source_url, source_id, category)
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s,%s,%s,%s,'loewen_frankfurt')
                 ON CONFLICT (source_url)
-                DO UPDATE SET category = EXCLUDED.category;
-            """, (title, content, link, source_id, category))
+                DO NOTHING
+            """, (title, content, link, sid))
+            inserted += cur.rowcount
 
-            processed += 1
-            if cur.rowcount > 0:
-                inserted += 1
+    # =================================================
+    # PHASE 3 – Regionale Medien (HTML Fetch)
+    # =================================================
+
+    SCRAPE_SOURCES = [
+        ("FNP", "https://www.fnp.de/sport/loewen-frankfurt/"),
+        ("OP-Online", "https://www.op-online.de/sport/loewen-frankfurt/"),
+    ]
+
+    headers = {"User-Agent": "LoewenNewsBot/1.0"}
+
+    for name, url in SCRAPE_SOURCES:
+        cur.execute(
+            "INSERT INTO sources (name, source_url) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+            (name, url)
+        )
+        cur.execute("SELECT id FROM sources WHERE source_url=%s", (url,))
+        sid = cur.fetchone()["id"]
+
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        for a in soup.select("a[href]")[:10]:
+            title = a.get_text(strip=True)
+            link = a.get("href")
+
+            if not title or "löwen" not in title.lower():
+                continue
+
+            if link.startswith("/"):
+                link = url.rstrip("/") + link
+
+            cur.execute("""
+                INSERT INTO news (title, source_url, source_id, category)
+                VALUES (%s,%s,%s,'loewen_frankfurt')
+                ON CONFLICT DO NOTHING
+            """, (title, link, sid))
+            inserted += cur.rowcount
 
     conn.commit()
     cur.close()
     conn.close()
 
-    return {
-        "sources": len(FEEDS),
-        "processed": processed,
-        "inserted": inserted,
-        "category": "loewen_frankfurt",
-    }
+    return {"imported": inserted}
