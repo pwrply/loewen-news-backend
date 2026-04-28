@@ -47,3 +47,12 @@ def setup():
     cur.close()
     conn.close()
     return {"setup": "news table ready ✅"}
+    @app.get("/news")
+def list_news():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM news ORDER BY created_at DESC;")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
