@@ -81,3 +81,45 @@ def add_news():
     cur.close()
     conn.close()
     return {"news": "added ✅"}
+
+import feedparser
+
+@app.get("/rss/import")
+def import_rss():
+    FEED_URL = "https://www.example.com/rss"  # 🔁 HIER SPÄTER ECHTE QUELLE EINTRAGEN
+
+    feed = feedparser.parse(FEED_URL)
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    inserted = 0
+
+    for entry in feed.entries:
+        title = entry.get("title", "").strip()
+        summary = entry.get("summary", "").strip()
+        link = entry.get("link")
+
+        if not title or not link:
+            continue
+
+        try:
+            cur.execute(
+                """
+                INSERT INTO news (title, content, source_url)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (source_url) DO NOTHING;
+                """,
+                (title, summary, link),
+            )
+            if cur.rowcount > 0:
+                inserted += 1
+        except Exception:
+            conn.rollback()
+            continue
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"rss_imported": inserted}
