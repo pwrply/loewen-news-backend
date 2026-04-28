@@ -8,7 +8,7 @@ app = FastAPI(title="Löwen Frankfurt News")
 
 
 # =====================================================
-# DB Connection
+# Datenbank
 # =====================================================
 
 def get_db_connection():
@@ -26,14 +26,13 @@ def get_db_connection():
 def root():
     return {"app": "Löwen Frankfurt News", "status": "running ✅"}
 
-
 @app.get("/health")
 def health():
     return {"ok": True}
 
 
 # =====================================================
-# Setup + Migration (SAFE, idempotent)
+# Setup + Migration (idempotent)
 # =====================================================
 
 @app.get("/setup")
@@ -41,7 +40,6 @@ def setup():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # RSS sources
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sources (
             id SERIAL PRIMARY KEY,
@@ -50,7 +48,6 @@ def setup():
         );
     """)
 
-    # News base table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS news (
             id SERIAL PRIMARY KEY,
@@ -60,12 +57,10 @@ def setup():
         );
     """)
 
-    # Migrations (old installs)
     cur.execute("ALTER TABLE news ADD COLUMN IF NOT EXISTS source_url TEXT;")
     cur.execute("ALTER TABLE news ADD COLUMN IF NOT EXISTS source_id INTEGER;")
     cur.execute("ALTER TABLE news ADD COLUMN IF NOT EXISTS category TEXT;")
 
-    # Unique constraint for source_url
     cur.execute("""
         DO $$
         BEGIN
@@ -83,7 +78,7 @@ def setup():
     cur.close()
     conn.close()
 
-    return {"setup": "sources & news ready ✅"}
+    return {"setup": "ok ✅"}
 
 
 # =====================================================
@@ -139,7 +134,7 @@ def list_loewen_news():
 
 
 # =====================================================
-# RSS Import with Löwen filter
+# RSS Import mit robustem Löwen‑Filter
 # =====================================================
 
 @app.get("/rss/import")
@@ -150,15 +145,13 @@ def import_rss():
         ("Hessenschau", "https://www.hessenschau.de/index.rss"),
     ]
 
-    LOEWEN_KEYWORDS = [
-        "löwen frankfurt",
-        "loewen frankfurt",
-        "frankfurt",
-        "löwen",
-        "loewen",
-        "eishockey",
-        "del",
-        "deutsche eishockey liga",
+    TEAM_KEYWORDS = [
+        "löwen", "loewen", "eishockey", "del",
+        "tor", "stürmer", "verteidiger", "torhüter"
+    ]
+
+    REGION_KEYWORDS = [
+        "frankfurt", "hessen", "rhein-main"
     ]
 
     conn = get_db_connection()
@@ -169,7 +162,6 @@ def import_rss():
     loewen_count = 0
 
     for source_name, feed_url in FEEDS:
-        # Ensure source exists
         cur.execute("""
             INSERT INTO sources (name, feed_url)
             VALUES (%s, %s)
@@ -202,9 +194,11 @@ def import_rss():
                     skipped += 1
                     continue
 
-                combined = f"{title} {content}".lower()
+                text = f"{title} {content}".lower()
+                is_team = any(k in text for k in TEAM_KEYWORDS)
+                is_region = any(k in text for k in REGION_KEYWORDS)
 
-                if any(k in combined for k in LOEWEN_KEYWORDS):
+                if is_team and is_region:
                     category = "loewen_frankfurt"
                     loewen_count += 1
                 else:
@@ -235,40 +229,3 @@ def import_rss():
         "loewen_news": loewen_count,
         "skipped": skipped,
     }
-
-
-# =====================================================
-# Backfill (categorize existing news once)
-# =====================================================
-
-@app.get("/migrate/news/backfill-loewen")
-def backfill_loewen_news():
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    KEYWORDS = [
-        "löwen frankfurt",
-        "loewen frankfurt",
-        "frankfurt",
-        "löwen",
-        "loewen",
-        "eishockey",
-        "del",
-    ]
-
-    where_clause = " OR ".join(
-        [f"(LOWER(title) LIKE '%{k}%' OR LOWER(content) LIKE '%{k}%')" for k in KEYWORDS]
-    )
-
-    cur.execute(f"""
-        UPDATE news
-        SET category = 'loewen_frankfurt'
-        WHERE category IS NULL
-        AND ({where_clause});
-    """)
-
-    affected = cur.rowcount
-    conn.commit()
-    cur.close()
-    conn.close()
-
