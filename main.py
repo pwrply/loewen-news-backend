@@ -167,6 +167,31 @@ def add_test_news():
     conn.close()
     return {"news": "added ✅"}
 
+@app.get("/news/loewen")
+def list_loewen_news():
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            news.id,
+            news.title,
+            news.content,
+            news.created_at,
+            sources.name AS source_name
+        FROM news
+        LEFT JOIN sources ON news.source_id = sources.id
+        WHERE news.category = 'loewen_frankfurt'
+        ORDER BY news.created_at DESC;
+        """
+    )
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
 
 # =====================================================
 # RSS-Import (mehrere Quellen, robust)
