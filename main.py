@@ -223,14 +223,16 @@ def import_rss():
         ("Hessenschau", "https://www.hessenschau.de/index.rss"),
     ]
 
-    LOEWEN_KEYWORDS = [
-        "löwen frankfurt",
-        "loewen frankfurt",
-        "löwen",
-        "loewen",
-        "del",
-        "deutsche eishockey liga",
-    ]
+LOEWEN_KEYWORDS = [
+    "löwen frankfurt",
+    "loewen frankfurt",
+    "löwen",
+    "loewen",
+    "frankfurt",
+    "eishockey",
+    "del",
+    "deutsche eishockey liga",
+]
 
     conn = get_db_connection()
     cur = conn.cursor()
