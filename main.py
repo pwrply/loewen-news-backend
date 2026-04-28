@@ -1,6 +1,17 @@
 from fastapi import FastAPI
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = FastAPI(title="Löwen Frankfurt News")
+
+
+def get_db_connection():
+    return psycopg2.connect(
+        os.environ["DATABASE_URL"],
+        cursor_factory=RealDictCursor
+    )
+
 
 @app.get("/")
 def root():
@@ -9,27 +20,21 @@ def root():
         "message": "Backend läuft!"
     }
 
+
 @app.get("/hello")
 def hello():
     return {"hello": "Willkommen 🦁🏒"}
-import os
-import psycopg2
+
 
 @app.get("/db-test")
 def db_test():
     try:
-        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        conn = get_db_connection()
         conn.close()
         return {"database": "connected ✅"}
     except Exception as e:
         return {"database": "error ❌", "detail": str(e)}
-from psycopg2.extras import RealDictCursor
 
-def get_db_connection():
-    return psycopg2.connect(
-        os.environ["DATABASE_URL"],
-        cursor_factory=RealDictCursor
-    )
 
 @app.get("/setup")
 def setup():
@@ -47,7 +52,9 @@ def setup():
     cur.close()
     conn.close()
     return {"setup": "news table ready ✅"}
-    @app.get("/news")
+
+
+@app.get("/news")
 def list_news():
     conn = get_db_connection()
     cur = conn.cursor()
