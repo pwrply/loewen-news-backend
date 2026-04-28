@@ -86,7 +86,7 @@ import feedparser
 
 @app.get("/rss/import")
 def import_rss():
-    FEED_URL = "https://www.tagesschau.de/xml/rss2/"  # 🔁 HIER SPÄTER ECHTE QUELLE EINTRAGEN
+    FEED_URL = "https://www.heise.de/rss/heise-atom.xml"  # 🔁 HIER SPÄTER ECHTE QUELLE EINTRAGEN
 
     feed = feedparser.parse(FEED_URL)
 
