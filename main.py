@@ -180,11 +180,21 @@ def import_rss():
         ("Hessenschau", "https://www.hessenschau.de/index.rss"),
     ]
 
+    LOEWEN_KEYWORDS = [
+        "löwen frankfurt",
+        "loewen frankfurt",
+        "löwen",
+        "loewen",
+        "del",
+        "deutsche eishockey liga",
+    ]
+
     conn = get_db_connection()
     cur = conn.cursor()
 
     inserted = 0
     skipped = 0
+    loewen_count = 0
 
     for source_name, feed_url in FEEDS:
         # Quelle anlegen
@@ -197,7 +207,6 @@ def import_rss():
             (source_name, feed_url),
         )
 
-        # source_id holen
         cur.execute(
             "SELECT id FROM sources WHERE feed_url = %s;",
             (feed_url,),
@@ -224,13 +233,22 @@ def import_rss():
                     skipped += 1
                     continue
 
+                combined_text = f"{title} {content}".lower()
+
+                # 🦁 Keyword-Check
+                if any(k in combined_text for k in LOEWEN_KEYWORDS):
+                    category = "loewen_frankfurt"
+                    loewen_count += 1
+                else:
+                    category = "general"
+
                 cur.execute(
                     """
-                    INSERT INTO news (title, content, source_url, source_id)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO news (title, content, source_url, source_id, category)
+                    VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (source_url) DO NOTHING;
                     """,
-                    (title, content, link, source_id),
+                    (title, content, link, source_id, category),
                 )
 
                 if cur.rowcount > 0:
@@ -249,5 +267,6 @@ def import_rss():
     return {
         "sources": len(FEEDS),
         "inserted": inserted,
+        "loewen_news": loewen_count,
         "skipped": skipped,
     }
