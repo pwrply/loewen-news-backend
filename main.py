@@ -97,10 +97,15 @@ def list_news():
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT * FROM news ORDER BY created_at DESC;"
+        """
+        SELECT news.*, sources.name AS source_name
+        FROM news
+        LEFT JOIN sources ON news.source_id = sources.id
+        ORDER BY news.created_at DESC;
+        """
     )
-    rows = cur.fetchall()
 
+    rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows
