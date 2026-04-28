@@ -8,7 +8,7 @@ app = FastAPI(title="Löwen Frankfurt News")
 
 
 # =====================================================
-# Datenbank-Verbindung
+# DB Connection
 # =====================================================
 
 def get_db_connection():
@@ -19,7 +19,7 @@ def get_db_connection():
 
 
 # =====================================================
-# Health / Basis
+# Health
 # =====================================================
 
 @app.get("/")
@@ -32,18 +32,8 @@ def health():
     return {"ok": True}
 
 
-@app.get("/db-test")
-def db_test():
-    try:
-        conn = get_db_connection()
-        conn.close()
-        return {"database": "connected ✅"}
-    except Exception as e:
-        return {"database": "error ❌", "detail": str(e)}
-
-
 # =====================================================
-# Setup + Migration (sicher, wiederholbar)
+# Setup + Migration (SAFE, idempotent)
 # =====================================================
 
 @app.get("/setup")
@@ -51,36 +41,32 @@ def setup():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # RSS-Quellen
-    cur.execute(
-        """
+    # RSS sources
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS sources (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             feed_url TEXT UNIQUE NOT NULL
         );
-        """
-    )
+    """)
 
-    # News-Tabelle (Basis)
-    cur.execute(
-        """
+    # News base table
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS news (
             id SERIAL PRIMARY KEY,
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        """
-    )
+    """)
 
-    # Migrationen (für alte Datenbanken!)
-    cur.execute("""ALTER TABLE news ADD COLUMN IF NOT EXISTS source_url TEXT;""")
-    cur.execute("""ALTER TABLE news ADD COLUMN IF NOT EXISTS source_id INTEGER;""")
+    # Migrations (old installs)
+    cur.execute("ALTER TABLE news ADD COLUMN IF NOT EXISTS source_url TEXT;")
+    cur.execute("ALTER TABLE news ADD COLUMN IF NOT EXISTS source_id INTEGER;")
+    cur.execute("ALTER TABLE news ADD COLUMN IF NOT EXISTS category TEXT;")
 
-    # Unique Constraint für source_url
-    cur.execute(
-        """
+    # Unique constraint for source_url
+    cur.execute("""
         DO $$
         BEGIN
             IF NOT EXISTS (
@@ -91,30 +77,13 @@ def setup():
                 ADD CONSTRAINT news_source_url_unique UNIQUE (source_url);
             END IF;
         END $$;
-        """
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return {"setup": "sources & news ready ✅"}
-
-@app.get("/migrate/news/category")
-def migrate_news_category():
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        ALTER TABLE news
-        ADD COLUMN IF NOT EXISTS category TEXT;
     """)
 
     conn.commit()
     cur.close()
     conn.close()
 
-    return {"migration": "category column added ✅"}
+    return {"setup": "sources & news ready ✅"}
 
 
 # =====================================================
@@ -126,54 +95,31 @@ def list_news():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT
             news.id,
             news.title,
             news.content,
             news.created_at,
+            news.category,
             sources.name AS source_name
         FROM news
         LEFT JOIN sources ON news.source_id = sources.id
         ORDER BY news.created_at DESC;
-        """
-    )
-    rows = cur.fetchall()
+    """)
 
+    rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows
 
-
-@app.get("/news/add")
-def add_test_news():
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO news (title, content)
-        VALUES (%s, %s);
-        """,
-        (
-            "Löwen Frankfurt gewinnen 4:2",
-            "Starkes Heimspiel in der DEL, wichtige drei Punkte.",
-        ),
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    return {"news": "added ✅"}
 
 @app.get("/news/loewen")
 def list_loewen_news():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    cur.execute(
-        """
+    cur.execute("""
         SELECT
             news.id,
             news.title,
@@ -184,35 +130,16 @@ def list_loewen_news():
         LEFT JOIN sources ON news.source_id = sources.id
         WHERE news.category = 'loewen_frankfurt'
         ORDER BY news.created_at DESC;
-        """
-    )
+    """)
 
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows
 
-@app.get("/debug/mark-loewen")
-def debug_mark_loewen():
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        UPDATE news
-        SET category = 'loewen_frankfurt'
-        WHERE id = (SELECT id FROM news ORDER BY created_at DESC LIMIT 1);
-        """
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-    return {"debug": "latest news marked as loewen ✅"}
-
 
 # =====================================================
-# RSS-Import (mehrere Quellen, robust)
+# RSS Import with Löwen filter
 # =====================================================
 
 @app.get("/rss/import")
@@ -223,16 +150,16 @@ def import_rss():
         ("Hessenschau", "https://www.hessenschau.de/index.rss"),
     ]
 
-LOEWEN_KEYWORDS = [
-    "löwen frankfurt",
-    "loewen frankfurt",
-    "löwen",
-    "loewen",
-    "frankfurt",
-    "eishockey",
-    "del",
-    "deutsche eishockey liga",
-]
+    LOEWEN_KEYWORDS = [
+        "löwen frankfurt",
+        "loewen frankfurt",
+        "frankfurt",
+        "löwen",
+        "loewen",
+        "eishockey",
+        "del",
+        "deutsche eishockey liga",
+    ]
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -242,25 +169,22 @@ LOEWEN_KEYWORDS = [
     loewen_count = 0
 
     for source_name, feed_url in FEEDS:
-        # Quelle anlegen
-        cur.execute(
-            """
+        # Ensure source exists
+        cur.execute("""
             INSERT INTO sources (name, feed_url)
             VALUES (%s, %s)
             ON CONFLICT (feed_url) DO NOTHING;
-            """,
-            (source_name, feed_url),
-        )
+        """, (source_name, feed_url))
 
         cur.execute(
             "SELECT id FROM sources WHERE feed_url = %s;",
             (feed_url,),
         )
-        row = cur.fetchone()
-        if not row:
+        src = cur.fetchone()
+        if not src:
             continue
 
-        source_id = row["id"]
+        source_id = src["id"]
         feed = feedparser.parse(feed_url)
 
         for entry in feed.entries:
@@ -278,23 +202,19 @@ LOEWEN_KEYWORDS = [
                     skipped += 1
                     continue
 
-                combined_text = f"{title} {content}".lower()
+                combined = f"{title} {content}".lower()
 
-                # 🦁 Keyword-Check
-                if any(k in combined_text for k in LOEWEN_KEYWORDS):
+                if any(k in combined for k in LOEWEN_KEYWORDS):
                     category = "loewen_frankfurt"
                     loewen_count += 1
                 else:
                     category = "general"
 
-                cur.execute(
-                    """
+                cur.execute("""
                     INSERT INTO news (title, content, source_url, source_id, category)
                     VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (source_url) DO NOTHING;
-                    """,
-                    (title, content, link, source_id, category),
-                )
+                """, (title, content, link, source_id, category))
 
                 if cur.rowcount > 0:
                     inserted += 1
@@ -315,3 +235,40 @@ LOEWEN_KEYWORDS = [
         "loewen_news": loewen_count,
         "skipped": skipped,
     }
+
+
+# =====================================================
+# Backfill (categorize existing news once)
+# =====================================================
+
+@app.get("/migrate/news/backfill-loewen")
+def backfill_loewen_news():
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    KEYWORDS = [
+        "löwen frankfurt",
+        "loewen frankfurt",
+        "frankfurt",
+        "löwen",
+        "loewen",
+        "eishockey",
+        "del",
+    ]
+
+    where_clause = " OR ".join(
+        [f"(LOWER(title) LIKE '%{k}%' OR LOWER(content) LIKE '%{k}%')" for k in KEYWORDS]
+    )
+
+    cur.execute(f"""
+        UPDATE news
+        SET category = 'loewen_frankfurt'
+        WHERE category IS NULL
+        AND ({where_clause});
+    """)
+
+    affected = cur.rowcount
+    conn.commit()
+    cur.close()
+    conn.close()
+
