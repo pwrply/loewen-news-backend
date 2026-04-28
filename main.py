@@ -156,3 +156,7 @@ def import_rss():
         "inserted": inserted,
         "skipped": skipped,
     }
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
