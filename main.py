@@ -7,6 +7,10 @@ import feedparser
 app = FastAPI(title="Löwen Frankfurt News")
 
 
+# =====================================================
+# DB Connection
+# =====================================================
+
 def get_db_connection():
     return psycopg2.connect(
         os.environ["DATABASE_URL"],
@@ -14,15 +18,22 @@ def get_db_connection():
     )
 
 
+# =====================================================
+# Health
+# =====================================================
+
 @app.get("/")
 def root():
     return {"app": "Löwen Frankfurt News", "status": "running ✅"}
-
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
+
+# =====================================================
+# Setup + Migration (idempotent)
+# =====================================================
 
 @app.get("/setup")
 def setup():
@@ -52,25 +63,32 @@ def setup():
     conn.commit()
     cur.close()
     conn.close()
+
     return {"setup": "ok ✅"}
 
+
+# =====================================================
+# News API
+# =====================================================
 
 @app.get("/news")
 def list_news():
     conn = get_db_connection()
     cur = conn.cursor()
+
     cur.execute("""
         SELECT
             news.id,
             news.title,
             news.content,
-            news.category,
             news.created_at,
+            news.category,
             sources.name AS source_name
         FROM news
         LEFT JOIN sources ON news.source_id = sources.id
         ORDER BY news.created_at DESC;
     """)
+
     rows = cur.fetchall()
     cur.close()
     conn.close()
@@ -81,6 +99,7 @@ def list_news():
 def list_loewen_news():
     conn = get_db_connection()
     cur = conn.cursor()
+
     cur.execute("""
         SELECT
             news.id,
@@ -93,31 +112,43 @@ def list_loewen_news():
         WHERE news.category = 'loewen_frankfurt'
         ORDER BY news.created_at DESC;
     """)
+
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows
 
 
+# =====================================================
+# RSS Import – NUR team-spezifische Feeds
+# =====================================================
+
 @app.get("/rss/import")
 def import_rss():
+    """
+    Alle diese Feeds sind EXPLIZIT zu den Löwen Frankfurt.
+    → Kategorie wird immer erzwungen.
+    """
+
     FEEDS = [
-        ("Heise", "https://www.heise.de/rss/heise-atom.xml"),
-        ("Tagesschau", "https://www.tagesschau.de/xml/rss2"),
-        ("Hessenschau", "https://www.hessenschau.de/index.rss"),
+        (
+            "sport.de – Löwen Frankfurt",
+            "https://www.sport.de/rss/news/te2940/loewen-frankfurt/",
+        ),
+        (
+            "Eishockey NEWS – Löwen Frankfurt",
+            "https://www.eishockeynews.de/rss/loewen-frankfurt",
+        ),
     ]
-
-    FORCE_LOEWEN_SOURCES = {"Hessenschau", "Tagesschau"}
-
-    TEAM_KEYWORDS = ["eishockey", "del", "tor", "playoff"]
-    REGION_KEYWORDS = ["frankfurt", "hessen", "rhein-main"]
 
     conn = get_db_connection()
     cur = conn.cursor()
 
-    changed = 0
+    inserted = 0
+    processed = 0
 
     for source_name, feed_url in FEEDS:
+        # Quelle anlegen
         cur.execute("""
             INSERT INTO sources (name, feed_url)
             VALUES (%s, %s)
@@ -135,21 +166,18 @@ def import_rss():
         for entry in feed.entries:
             title = (entry.get("title") or "").strip()
             link = entry.get("link")
-            content = (entry.get("summary") or entry.get("description") or "").strip()
+            content = (
+                entry.get("summary")
+                or entry.get("description")
+                or ""
+            ).strip()
 
             if not title or not link:
                 continue
 
-            text = f"{title} {content}".lower()
+            # 🔥 Kategorie direkt setzen
+            category = "loewen_frankfurt"
 
-            if source_name in FORCE_LOEWEN_SOURCES:
-                category = "loewen_frankfurt"
-            elif any(k in text for k in TEAM_KEYWORDS) or any(k in text for k in REGION_KEYWORDS):
-                category = "loewen_frankfurt"
-            else:
-                category = "general"
-
-            # 🔥 ENTSCHEIDENDER FIX: DO UPDATE
             cur.execute("""
                 INSERT INTO news (title, content, source_url, source_id, category)
                 VALUES (%s, %s, %s, %s, %s)
@@ -157,10 +185,17 @@ def import_rss():
                 DO UPDATE SET category = EXCLUDED.category;
             """, (title, content, link, source_id, category))
 
-            changed += 1
+            processed += 1
+            if cur.rowcount > 0:
+                inserted += 1
 
     conn.commit()
     cur.close()
     conn.close()
 
-    return {"processed": changed}
+    return {
+        "sources": len(FEEDS),
+        "processed": processed,
+        "inserted": inserted,
+        "category": "loewen_frankfurt",
+    }
