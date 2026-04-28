@@ -66,15 +66,17 @@ def list_news():
     cur.close()
     conn.close()
     return rows
+    
 @app.get("/news/add")
 def add_news():
     conn = get_db_connection()
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO news (title, content) VALUES (%s, %s);",
+        "INSERT INTO news (title, content, source_url) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING;",
         (
-            "Löwen Frankfurt gewinnen 4:2",
-            "Starkes Heimspiel in der DEL, wichtige drei Punkte.",
+            "Test News aus der App",
+            "Diese News wurde aus der iOS App ausgelöst.",
+            None,
         )
     )
     conn.commit()
