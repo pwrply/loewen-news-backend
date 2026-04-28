@@ -88,6 +88,8 @@ import feedparser
 
 import feedparser
 
+import feedparser
+
 @app.get("/rss/import")
 def import_rss():
     FEED_URL = "https://www.heise.de/rss/heise-atom.xml"
@@ -101,45 +103,26 @@ def import_rss():
     skipped = 0
 
     for entry in feed.entries:
-        title = (entry.get("title") or "").strip()
-        link = entry.get("link")
+        try:
+            title = (entry.get("title") or "").strip()
+            link = entry.get("link")
 
-        # 🔹 Inhalt robust holen
-        content = (
-            entry.get("summary")
-            or entry.get("description")
-            or (
-                entry.get("content")[0].get("value")
-                if entry.get("content") else ""
-            )
-            or ""
-        )
-        content = content.strip()
+            # ✅ Inhalt robust bestimmen
+            content = ""
+            if "summary" in entry:
+                content = entry.summary
+            elif "description" in entry:
+                content = entry.description
+            elif "content" in entry and isinstance(entry.content, list):
+                first = entry.content[0]
+                if isinstance(first, dict):
+                    content = first.get("value", "")
 
-        if not title or not link:
-            skipped += 1
-            continue
+            content = (content or "").strip()
 
-        cur.execute(
-            """
-            INSERT INTO news (title, content, source_url)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (source_url) DO NOTHING;
-            """,
-            (title, content, link),
-        )
+            if not title or not link:
+                skipped += 1
+                continue
 
-        if cur.rowcount > 0:
-            inserted += 1
-        else:
-            skipped += 1
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return {
-        "feed_entries": len(feed.entries),
-        "inserted": inserted,
-        "skipped": skipped,
-    }
+            cur.execute(
+                """
