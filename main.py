@@ -127,7 +127,7 @@ def add_news():
 
 @app.get("/rss/import")
 def import_rss():
-    FEED_URL = "https://www.heise.de/rss/heise-atom.xml"
+    FEED_URL = "https://sportschau.de/rss/"
 
     feed = feedparser.parse(FEED_URL)
 
