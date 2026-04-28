@@ -54,6 +54,18 @@ def setup():
     conn = get_db_connection()
     cur = conn.cursor()
 
+    # Quellen (RSS-Feeds)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sources (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            feed_url TEXT UNIQUE NOT NULL
+        );
+        """
+    )
+
+    # News-Artikel
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS news (
@@ -61,6 +73,7 @@ def setup():
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             source_url TEXT UNIQUE,
+            source_id INTEGER REFERENCES sources(id),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """
@@ -70,7 +83,8 @@ def setup():
     cur.close()
     conn.close()
 
-    return {"setup": "news table ready ✅"}
+    return {"setup": "sources & news tables ready ✅"}
+
 
 
 # ---------------------------
