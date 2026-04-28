@@ -112,65 +112,87 @@ def list_news():
 
 @app.get("/rss/import")
 def import_rss():
-    FEED_URL = "https://sportschau.de/rss/"
-
-    feed = feedparser.parse(FEED_URL)
+    FEEDS = [
+        ("Heise", "https://www.heise.de/rss/heise-atom.xml"),
+        ("Tagesschau", "https://www.tagesschau.de/xml/rss2"),
+        ("Hessenschau", "https://www.hessenschau.de/index.rss"),
+    ]
 
     conn = get_db_connection()
     cur = conn.cursor()
 
-    inserted = 0
-    skipped = 0
+    total_inserted = 0
+    total_skipped = 0
 
-    for entry in feed.entries:
-        try:
-            title = (entry.get("title") or "").strip()
-            link = entry.get("link")
+    for source_name, feed_url in FEEDS:
+        # Quelle anlegen (falls noch nicht da)
+        cur.execute(
+            """
+            INSERT INTO sources (name, feed_url)
+            VALUES (%s, %s)
+            ON CONFLICT (feed_url) DO NOTHING;
+            """,
+            (source_name, feed_url),
+        )
 
-            content = ""
-            if "summary" in entry:
-                content = entry.summary
-            elif "description" in entry:
-                content = entry.description
-            elif "content" in entry and isinstance(entry.content, list):
-                first = entry.content[0]
-                if isinstance(first, dict):
-                    content = first.get("value", "")
-
-            content = (content or "").strip()
-
-            if not title or not link:
-                skipped += 1
-                continue
-
-            cur.execute(
-                """
-                INSERT INTO news (title, content, source_url)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (source_url) DO NOTHING;
-                """,
-                (title, content, link),
-            )
-
-            if cur.rowcount > 0:
-                inserted += 1
-            else:
-                skipped += 1
-
-        except Exception:
-            skipped += 1
+        # source_id holen
+        cur.execute(
+            "SELECT id FROM sources WHERE feed_url = %s;",
+            (feed_url,),
+        )
+        source_id_row = cur.fetchone()
+        if not source_id_row:
             continue
+
+        source_id = source_id_row["id"]
+
+        feed = feedparser.parse(feed_url)
+
+        for entry in feed.entries:
+            try:
+                title = (entry.get("title") or "").strip()
+                link = entry.get("link")
+
+                content = ""
+                if "summary" in entry:
+                    content = entry.summary
+                elif "description" in entry:
+                    content = entry.description
+                elif "content" in entry and isinstance(entry.content, list):
+                    first = entry.content[0]
+                    if isinstance(first, dict):
+                        content = first.get("value", "")
+
+                content = (content or "").strip()
+
+                if not title or not link:
+                    total_skipped += 1
+                    continue
+
+                cur.execute(
+                    """
+                    INSERT INTO news (title, content, source_url, source_id)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (source_url) DO NOTHING;
+                    """,
+                    (title, content, link, source_id),
+                )
+
+                if cur.rowcount > 0:
+                    total_inserted += 1
+                else:
+                    total_skipped += 1
+
+            except Exception:
+                total_skipped += 1
+                continue
 
     conn.commit()
     cur.close()
     conn.close()
 
     return {
-        "feed_entries": len(feed.entries),
-        "inserted": inserted,
-        "skipped": skipped,
+        "inserted": total_inserted,
+        "skipped": total_skipped,
+        "sources": len(FEEDS),
     }
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
