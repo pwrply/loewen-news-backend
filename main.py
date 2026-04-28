@@ -93,35 +93,6 @@ def list_news():
 
 
 # ---------------------------
-# Test-News (für App-Button)
-# ---------------------------
-
-@app.get("/news/add")
-def add_news():
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO news (title, content, source_url)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (source_url) DO NOTHING;
-        """,
-        (
-            "Test News aus der App",
-            "Diese News wurde über die iOS-App hinzugefügt.",
-            None,
-        ),
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return {"news": "added ✅"}
-
-
-# ---------------------------
 # RSS-Import (crash-sicher)
 # ---------------------------
 
