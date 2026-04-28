@@ -100,6 +100,22 @@ def setup():
 
     return {"setup": "sources & news ready ✅"}
 
+@app.get("/migrate/news/category")
+def migrate_news_category():
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        ALTER TABLE news
+        ADD COLUMN IF NOT EXISTS category TEXT;
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"migration": "category column added ✅"}
+
 
 # =====================================================
 # News API
