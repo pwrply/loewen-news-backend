@@ -192,6 +192,24 @@ def list_loewen_news():
     conn.close()
     return rows
 
+@app.get("/debug/mark-loewen")
+def debug_mark_loewen():
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        UPDATE news
+        SET category = 'loewen_frankfurt'
+        WHERE id = (SELECT id FROM news ORDER BY created_at DESC LIMIT 1);
+        """
+    )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    return {"debug": "latest news marked as loewen ✅"}
+
 
 # =====================================================
 # RSS-Import (mehrere Quellen, robust)
