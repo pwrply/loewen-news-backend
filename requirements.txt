@@ -2,3 +2,5 @@ fastapi
 uvicorn
 psycopg2-binary
 feedparser
+requests
+beautifulsoup4
