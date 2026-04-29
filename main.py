@@ -22,7 +22,7 @@ def get_db_connection():
 
 
 # =====================================================
-# Setup / Migration
+# SETUP (idempotent)
 # =====================================================
 
 @app.get("/setup")
@@ -53,7 +53,6 @@ def setup():
     conn.commit()
     cur.close()
     conn.close()
-
     return {"setup": "ok ✅"}
 
 
@@ -86,7 +85,7 @@ def get_loewen_news():
 
 
 # =====================================================
-# RSS / IMPORT (NIE 500!)
+# RSS IMPORT – 500-SICHER
 # =====================================================
 
 @app.get("/rss/import")
@@ -98,9 +97,9 @@ def rss_import():
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # =================================================
-        # PHASE 1 – Team-RSS (Kategorie erzwingen)
-        # =================================================
+        # -------------------------
+        # PHASE 1 – Team RSS
+        # -------------------------
         TEAM_FEEDS = [
             ("sport.de – Löwen Frankfurt",
              "https://www.sport.de/rss/news/te2940/loewen-frankfurt/"),
@@ -135,101 +134,17 @@ def rss_import():
                         ON CONFLICT (source_url)
                         DO UPDATE SET category='loewen_frankfurt'
                     """, (title, content, link, sid))
+
                     inserted += cur.rowcount
 
             except Exception as e:
                 errors.append(f"[PHASE1:{name}] {repr(e)}")
-
-        # =================================================
-        # PHASE 2 – Eisblog RSS (Keyword-Filter)
-        # =================================================
-        try:
-            name = "Eisblog"
-            url = "https://eisblog.media/feed/"
-            KEYWORDS = ["löwen", "loewen", "frankfurt"]
-
-            cur.execute(
-                "INSERT INTO sources (name, source_url) VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                (name, url)
-            )
-            cur.execute("SELECT id FROM sources WHERE source_url=%s", (url,))
-            row = cur.fetchone()
-            if row:
-                sid = row["id"]
-                feed = feedparser.parse(url)
-
-                for e in feed.entries:
-                    title = (e.get("title") or "").strip()
-                    link = e.get("link")
-                    content = (e.get("summary") or "").strip()
-                    text = f"{title} {content}".lower()
-
-                    if not any(k in text for k in KEYWORDS):
-                        continue
-
-                    cur.execute("""
-                        INSERT INTO news (title, content, source_url, source_id, category)
-                        VALUES (%s,%s,%s,%s,'loewen_frankfurt')
-                        ON CONFLICT DO NOTHING
-                    """, (title, content, link, sid))
-                    inserted += cur.rowcount
-
-        except Exception as e:
-            errors.append(f"[PHASE2:EISBLOG] {repr(e)}")
-
-        # =================================================
-        # PHASE 3 – Regionale Medien (HTML, SAFE)
-        # =================================================
-        SCRAPE_SOURCES = [
-            ("FNP", "https://www.fnp.de/sport/loewen-frankfurt/"),
-            ("OP-Online", "https://www.op-online.de/sport/loewen-frankfurt/"),
-        ]
-
-        headers = {"User-Agent": "LoewenNewsBot/1.0"}
-
-        for name, url in SCRAPE_SOURCES:
-            try:
-                cur.execute(
-                    "INSERT INTO sources (name, source_url) VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                    (name, url)
-                )
-                cur.execute("SELECT id FROM sources WHERE source_url=%s", (url,))
-                row = cur.fetchone()
-                if not row:
-                    continue
-                sid = row["id"]
-
-                resp = requests.get(url, headers=headers, timeout=8)
-                resp.raise_for_status()
-
-                soup = BeautifulSoup(resp.text, "html.parser")
-
-                for a in soup.select("a[href]")[:20]:
-                    title = a.get_text(strip=True)
-                    link = a.get("href")
-
-                    if not title or "löwen" not in title.lower():
-                        continue
-
-                    if link.startswith("/"):
-                        link = url.rstrip("/") + link
-
-                    cur.execute("""
-                        INSERT INTO news (title, source_url, source_id, category)
-                        VALUES (%s,%s,%s,'loewen_frankfurt')
-                        ON CONFLICT DO NOTHING
-                    """, (title, link, sid))
-                    inserted += cur.rowcount
-
-            except Exception as e:
-                errors.append(f"[PHASE3:{name}] {repr(e)}")
 
         conn.commit()
         cur.close()
         conn.close()
 
     except Exception as fatal:
-        # ABSOLUTES SICHERHEITSNETZ
         return {
             "status": "fatal_error_caught",
             "error": repr(fatal),
@@ -241,34 +156,3 @@ def rss_import():
         "inserted": inserted,
         "errors": errors,
     }
-
-@app.get("/migrate/sources-source-url")
-def migrate_sources_add_source_url():
-    conn = get_db_connection()
-    cur = conn.cursor()
-
-    cur.execute("""
-        ALTER TABLE sources
-        ADD COLUMN IF NOT EXISTS source_url TEXT;
-    """)
-
-    # Unique-Constraint (falls noch nicht vorhanden)
-    cur.execute("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1
-                FROM pg_constraint
-                WHERE conname = 'sources_source_url_unique'
-            ) THEN
-                ALTER TABLE sources
-                ADD CONSTRAINT sources_source_url_unique UNIQUE (source_url);
-            END IF;
-        END $$;
-    """)
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return {"migration": "sources.source_url added ✅"}
