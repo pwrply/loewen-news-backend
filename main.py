@@ -83,17 +83,25 @@ def list_news():
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT news.*, sources.name AS source_name
+        SELECT
+            news.id,
+            news.title,
+            sources.name AS source,
+            news.source_url AS link,
+            COALESCE(
+                news.published_at,
+                news.created_at
+            ) AS date
         FROM news
         LEFT JOIN sources ON news.source_id = sources.id
-        ORDER BY news.created_at DESC;
+        ORDER BY
+            COALESCE(news.published_at, news.created_at) DESC;
     """)
 
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows
-
 
 @app.get("/news/loewen")
 def list_loewen_news():
