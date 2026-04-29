@@ -158,33 +158,45 @@ def import_all():
             """, (title, content, link, sid))
             inserted += cur.rowcount
 
-    # =================================================
-    # PHASE 3 – Regionale Medien (HTML Fetch)
-    # =================================================
+# =================================================
+# PHASE 3 – Regionale Medien (HTML Fetch, SAFE)
+# =================================================
 
-    SCRAPE_SOURCES = [
-        ("FNP", "https://www.fnp.de/sport/loewen-frankfurt/"),
-        ("OP-Online", "https://www.op-online.de/sport/loewen-frankfurt/"),
-    ]
+SCRAPE_SOURCES = [
+    ("FNP", "https://www.fnp.de/sport/loewen-frankfurt/"),
+    ("OP-Online", "https://www.op-online.de/sport/loewen-frankfurt/"),
+]
 
-    headers = {"User-Agent": "LoewenNewsBot/1.0"}
+headers = {"User-Agent": "LoewenNewsBot/1.0"}
 
-    for name, url in SCRAPE_SOURCES:
+for name, url in SCRAPE_SOURCES:
+    try:
+        # Quelle sicher anlegen
         cur.execute(
             "INSERT INTO sources (name, source_url) VALUES (%s,%s) ON CONFLICT DO NOTHING",
             (name, url)
         )
         cur.execute("SELECT id FROM sources WHERE source_url=%s", (url,))
-        sid = cur.fetchone()["id"]
+        row = cur.fetchone()
+        if not row:
+            continue
+        sid = row["id"]
 
-        r = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
+        # HTML laden
+        resp = requests.get(url, headers=headers, timeout=8)
+        resp.raise_for_status()
 
-        for a in soup.select("a[href]")[:10]:
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        links = soup.select("a[href]")[:15]
+
+        for a in links:
             title = a.get_text(strip=True)
             link = a.get("href")
 
-            if not title or "löwen" not in title.lower():
+            if not title:
+                continue
+            if "löwen" not in title.lower():
                 continue
 
             if link.startswith("/"):
@@ -195,10 +207,10 @@ def import_all():
                 VALUES (%s,%s,%s,'loewen_frankfurt')
                 ON CONFLICT DO NOTHING
             """, (title, link, sid))
+
             inserted += cur.rowcount
 
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return {"imported": inserted}
+    except Exception as e:
+        # ❗ Wichtig: Fehler nur loggen, NICHT abbrechen
+        print(f"[Phase3][{name}] skipped due to error:", e)
+        continue
