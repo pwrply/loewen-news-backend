@@ -22,7 +22,7 @@ def get_db_connection():
 
 
 # =====================================================
-# SETUP (passt zur EXISTIERENDEN DB)
+# SETUP (passt zu bestehender DB: sources.feed_url NOT NULL)
 # =====================================================
 
 @app.get("/setup")
@@ -30,7 +30,6 @@ def setup():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # sources hat feed_url als kanonische Spalte
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sources (
             id SERIAL PRIMARY KEY,
@@ -86,7 +85,7 @@ def get_loewen_news():
 
 
 # =====================================================
-# RSS IMPORT – ABSOLUT 500‑SICHER
+# RSS IMPORT – 500‑SICHER
 # =====================================================
 
 @app.get("/rss/import")
@@ -99,7 +98,7 @@ def rss_import():
         cur = conn.cursor()
 
         # =============================
-        # PHASE 1 – Team RSS
+        # PHASE 1 – Team‑RSS (erzwingen)
         # =============================
         TEAM_FEEDS = [
             ("sport.de – Löwen Frankfurt",
@@ -117,7 +116,10 @@ def rss_import():
                 """, (name, feed_url))
 
                 cur.execute("SELECT id FROM sources WHERE feed_url=%s", (feed_url,))
-                sid = cur.fetchone()["id"]
+                row = cur.fetchone()
+                if not row:
+                    continue
+                sid = row["id"]
 
                 feed = feedparser.parse(feed_url)
                 for e in feed.entries:
@@ -141,7 +143,7 @@ def rss_import():
                 errors.append(f"[PHASE1:{name}] {repr(e)}")
 
         # =============================
-        # PHASE 2 – Eisblog
+        # PHASE 2 – Eisblog (Filter)
         # =============================
         try:
             name = "Eisblog"
@@ -155,31 +157,33 @@ def rss_import():
             """, (name, feed_url))
 
             cur.execute("SELECT id FROM sources WHERE feed_url=%s", (feed_url,))
-            sid = cur.fetchone()["id"]
+            row = cur.fetchone()
+            if row:
+                sid = row["id"]
+                feed = feedparser.parse(feed_url)
 
-            feed = feedparser.parse(feed_url)
-            for e in feed.entries:
-                title = (e.get("title") or "").strip()
-                link = e.get("link")
-                content = (e.get("summary") or "").strip()
-                text = f"{title} {content}".lower()
+                for e in feed.entries:
+                    title = (e.get("title") or "").strip()
+                    link = e.get("link")
+                    content = (e.get("summary") or "").strip()
+                    text = f"{title} {content}".lower()
 
-                if not any(k in text for k in KEYWORDS):
-                    continue
+                    if not any(k in text for k in KEYWORDS):
+                        continue
 
-                cur.execute("""
-                    INSERT INTO news (title, content, source_url, source_id, category)
-                    VALUES (%s,%s,%s,%s,'loewen_frankfurt')
-                    ON CONFLICT DO NOTHING
-                """, (title, content, link, sid))
+                    cur.execute("""
+                        INSERT INTO news (title, content, source_url, source_id, category)
+                        VALUES (%s,%s,%s,%s,'loewen_frankfurt')
+                        ON CONFLICT DO NOTHING
+                    """, (title, content, link, sid))
 
-                inserted += cur.rowcount
+                    inserted += cur.rowcount
 
         except Exception as e:
             errors.append(f"[PHASE2:EISBLOG] {repr(e)}")
 
         # =============================
-        # PHASE 3 – FNP / OP (HTML)
+        # PHASE 3 – FNP / OP (HTML‑Headlines)
         # =============================
         SCRAPE_SOURCES = [
             ("FNP", "https://www.fnp.de/sport/loewen-frankfurt/"),
@@ -197,7 +201,10 @@ def rss_import():
                 """, (name, feed_url))
 
                 cur.execute("SELECT id FROM sources WHERE feed_url=%s", (feed_url,))
-                sid = cur.fetchone()["id"]
+                row = cur.fetchone()
+                if not row:
+                    continue
+                sid = row["id"]
 
                 resp = requests.get(feed_url, headers=headers, timeout=8)
                 resp.raise_for_status()
@@ -230,6 +237,7 @@ def rss_import():
         conn.close()
 
     except Exception as fatal:
+        # Absolute Sicherung: niemals 500
         return {
             "status": "fatal_error_caught",
             "error": repr(fatal),
