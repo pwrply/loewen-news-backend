@@ -45,7 +45,6 @@ def setup():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # sources: feed_url ist die kanonische Spalte und NOT NULL
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sources (
             id SERIAL PRIMARY KEY,
@@ -54,8 +53,7 @@ def setup():
         );
     """)
 
-    # news: content kann bei dir NOT NULL sein → wir setzen DEFAULT ''
-    # (falls Tabelle schon existiert, wird sie dadurch nicht geändert – aber wir schreiben im Code nie NULL)
+    # content ist bei dir offenbar NOT NULL -> Default '' schützt uns zusätzlich.
     cur.execute("""
         CREATE TABLE IF NOT EXISTS news (
             id SERIAL PRIMARY KEY,
@@ -117,7 +115,7 @@ def list_loewen_news():
 
 
 # =====================================================
-# IMPORT (Phase 1–3) – robust, 500-sicher
+# IMPORT (RSS + HTML) – robust, 500-sicher
 # =====================================================
 
 @app.get("/rss/import")
@@ -126,9 +124,9 @@ def rss_import():
     errors = []
 
     # Phase 1: Team-spezifisch (Kategorie erzwingen)
-    TEAM_FEEDS = [
+    TEAM_FEEDS_RSS = [
         ("sport.de – Löwen Frankfurt", "https://www.sport.de/rss/news/te2940/loewen-frankfurt/"),
-        # Optional (kann leer sein, falls kein echter RSS): Seite wird trotzdem versucht
+        # EishockeyNews ist eine Seite; feedparser kommt oft klar, sonst gibt es keinen Crash, nur ggf. 0 entries
         ("Eishockey NEWS – Löwen Frankfurt", "https://www.eishockeynews.de/del/loewen-frankfurt"),
     ]
 
@@ -138,11 +136,18 @@ def rss_import():
     ]
     BLOG_KEYWORDS = ["löwen", "loewen", "frankfurt"]
 
-    # Phase 3: Regionale Medien (HTML Headlines, kein Volltext)
+    # Phase 3: Regionale Medien (HTML Headlines)
     SCRAPE_SOURCES = [
         ("FNP", "https://www.fnp.de/sport/loewen-frankfurt/"),
         ("OP-Online", "https://www.op-online.de/sport/loewen-frankfurt/"),
     ]
+
+    # Phase 4: OFFIZIELL + PENNY DEL (HTML Headlines)
+    OFFICIAL_HTML = [
+        ("Löwen Frankfurt (offiziell) – Aktuelles", "https://www.loewen-frankfurt.de/saison/aktuelles/"),
+        ("PENNY DEL – News", "https://www.penny-del.org/news/"),
+    ]
+
     headers = {"User-Agent": "LoewenNewsBot/1.0"}
 
     try:
@@ -152,7 +157,7 @@ def rss_import():
         # ---------------------------
         # Helper: Source upsert + id holen
         # ---------------------------
-        def ensure_source(name: str, feed_url: str) -> int:
+        def ensure_source(name: str, feed_url: str):
             cur.execute(
                 "INSERT INTO sources (name, feed_url) VALUES (%s,%s) ON CONFLICT (feed_url) DO NOTHING",
                 (name, feed_url),
@@ -162,9 +167,9 @@ def rss_import():
             return row["id"] if row else None
 
         # =================================================
-        # PHASE 1 – TEAM FEEDS
+        # PHASE 1 – TEAM (RSS/Feedparser)
         # =================================================
-        for name, feed_url in TEAM_FEEDS:
+        for name, feed_url in TEAM_FEEDS_RSS:
             try:
                 sid = ensure_source(name, feed_url)
                 if not sid:
@@ -173,8 +178,9 @@ def rss_import():
                     continue
 
                 feed = feedparser.parse(feed_url)
+                entries = getattr(feed, "entries", []) or []
 
-                for e in getattr(feed, "entries", []) or []:
+                for e in entries:
                     title = (e.get("title") or "").strip()
                     link = e.get("link")
                     summary = (e.get("summary") or e.get("description") or "").strip()
@@ -182,9 +188,7 @@ def rss_import():
                     if not title or not link:
                         continue
 
-                    # content darf NIE NULL sein
-                    content = summary if summary else title
-
+                    content = summary if summary else title  # niemals NULL
                     cur.execute("""
                         INSERT INTO news (title, content, source_url, source_id, category)
                         VALUES (%s,%s,%s,%s,'loewen_frankfurt')
@@ -202,7 +206,7 @@ def rss_import():
                 continue
 
         # =================================================
-        # PHASE 2 – BLOG FEEDS (Filter)
+        # PHASE 2 – BLOG (RSS + Keyword Filter)
         # =================================================
         for name, feed_url in BLOG_FEEDS:
             try:
@@ -213,8 +217,9 @@ def rss_import():
                     continue
 
                 feed = feedparser.parse(feed_url)
+                entries = getattr(feed, "entries", []) or []
 
-                for e in getattr(feed, "entries", []) or []:
+                for e in entries:
                     title = (e.get("title") or "").strip()
                     link = e.get("link")
                     summary = (e.get("summary") or e.get("description") or "").strip()
@@ -227,7 +232,6 @@ def rss_import():
                         continue
 
                     content = summary if summary else title
-
                     cur.execute("""
                         INSERT INTO news (title, content, source_url, source_id, category)
                         VALUES (%s,%s,%s,%s,'loewen_frankfurt')
@@ -245,7 +249,7 @@ def rss_import():
                 continue
 
         # =================================================
-        # PHASE 3 – HTML SOURCES (Headlines only)
+        # PHASE 3 – REGIONALE MEDIEN (HTML Headlines)
         # =================================================
         for name, page_url in SCRAPE_SOURCES:
             try:
@@ -260,22 +264,17 @@ def rss_import():
 
                 soup = BeautifulSoup(resp.text, "html.parser")
 
-                # Wir nehmen nur Headlines/Links und speichern KEINEN Volltext
-                for a in soup.select("a[href]")[:40]:
+                for a in soup.select("a[href]")[:60]:
                     title = a.get_text(strip=True)
                     href = a.get("href")
 
                     if not title:
                         continue
-
-                    # minimale Relevanz: muss "löwen" enthalten
                     if "löwen" not in title.lower():
                         continue
 
                     link = urljoin(page_url, href)
-
-                    # content darf NIE NULL sein -> fallback ist title
-                    content = title
+                    content = title  # niemals NULL
 
                     cur.execute("""
                         INSERT INTO news (title, content, source_url, source_id, category)
@@ -293,6 +292,70 @@ def rss_import():
                 errors.append(f"[PHASE3:{name}] {repr(e)}")
                 continue
 
+        # =================================================
+        # PHASE 4 – OFFIZIELL + PENNY DEL (HTML Headlines)
+        # =================================================
+        for name, page_url in OFFICIAL_HTML:
+            try:
+                sid = ensure_source(name, page_url)
+                if not sid:
+                    conn.rollback()
+                    errors.append(f"[PHASE4:{name}] could not get source_id")
+                    continue
+
+                resp = requests.get(page_url, headers=headers, timeout=8)
+                resp.raise_for_status()
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+
+                if "loewen-frankfurt.de" in page_url:
+                    # Offizielle Aktuelles-Links sind typischerweise /saison/aktuelles/details/...
+                    anchors = soup.select("a[href^='/saison/aktuelles/details/']")
+                    base = "https://www.loewen-frankfurt.de"
+                    for a in anchors[:80]:
+                        title = a.get_text(strip=True)
+                        href = a.get("href")
+                        if not title or not href:
+                            continue
+                        link = urljoin(base, href)
+                        content = title
+                        cur.execute("""
+                            INSERT INTO news (title, content, source_url, source_id, category)
+                            VALUES (%s,%s,%s,%s,'loewen_frankfurt')
+                            ON CONFLICT (source_url)
+                            DO UPDATE SET category='loewen_frankfurt';
+                        """, (title, content, link, sid))
+                        inserted += cur.rowcount
+
+                else:
+                    # PENNY DEL News: viele Liga-News -> filter auf Frankfurt/Löwen im Titel
+                    anchors = soup.select("a[href^='/news/']")
+                    base = "https://www.penny-del.org"
+                    for a in anchors[:120]:
+                        title = a.get_text(strip=True)
+                        href = a.get("href")
+                        if not title or not href:
+                            continue
+                        t = title.lower()
+                        if ("frankfurt" not in t) and ("löwen" not in t) and ("loewen" not in t):
+                            continue
+                        link = urljoin(base, href)
+                        content = title
+                        cur.execute("""
+                            INSERT INTO news (title, content, source_url, source_id, category)
+                            VALUES (%s,%s,%s,%s,'loewen_frankfurt')
+                            ON CONFLICT (source_url)
+                            DO UPDATE SET category='loewen_frankfurt';
+                        """, (title, content, link, sid))
+                        inserted += cur.rowcount
+
+                conn.commit()
+
+            except Exception as e:
+                conn.rollback()
+                errors.append(f"[PHASE4:{name}] {repr(e)}")
+                continue
+
         cur.close()
         conn.close()
 
@@ -308,4 +371,8 @@ def rss_import():
         "status": "ok ✅",
         "inserted_or_updated": inserted,
         "errors": errors,
+        "sources_added": {
+            "loewen_official": "https://www.loewen-frankfurt.de/saison/aktuelles/",
+            "penny_del_news": "https://www.penny-del.org/news/",
+        }
     }
