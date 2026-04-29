@@ -22,7 +22,7 @@ def get_db_connection():
 
 
 # =====================================================
-# SETUP (idempotent)
+# SETUP (passt zur EXISTIERENDEN DB)
 # =====================================================
 
 @app.get("/setup")
@@ -30,11 +30,12 @@ def setup():
     conn = get_db_connection()
     cur = conn.cursor()
 
+    # sources hat feed_url als kanonische Spalte
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sources (
             id SERIAL PRIMARY KEY,
             name TEXT NOT NULL,
-            source_url TEXT UNIQUE
+            feed_url TEXT NOT NULL UNIQUE
         );
     """)
 
@@ -85,7 +86,7 @@ def get_loewen_news():
 
 
 # =====================================================
-# RSS IMPORT – 500-SICHER
+# RSS IMPORT – ABSOLUT 500‑SICHER
 # =====================================================
 
 @app.get("/rss/import")
@@ -97,9 +98,9 @@ def rss_import():
         conn = get_db_connection()
         cur = conn.cursor()
 
-        # -------------------------
+        # =============================
         # PHASE 1 – Team RSS
-        # -------------------------
+        # =============================
         TEAM_FEEDS = [
             ("sport.de – Löwen Frankfurt",
              "https://www.sport.de/rss/news/te2940/loewen-frankfurt/"),
@@ -107,19 +108,18 @@ def rss_import():
              "https://www.eishockeynews.de/del/loewen-frankfurt"),
         ]
 
-        for name, url in TEAM_FEEDS:
+        for name, feed_url in TEAM_FEEDS:
             try:
-                cur.execute(
-                    "INSERT INTO sources (name, source_url) VALUES (%s,%s) ON CONFLICT DO NOTHING",
-                    (name, url)
-                )
-                cur.execute("SELECT id FROM sources WHERE source_url=%s", (url,))
-                row = cur.fetchone()
-                if not row:
-                    continue
-                sid = row["id"]
+                cur.execute("""
+                    INSERT INTO sources (name, feed_url)
+                    VALUES (%s,%s)
+                    ON CONFLICT (feed_url) DO NOTHING
+                """, (name, feed_url))
 
-                feed = feedparser.parse(url)
+                cur.execute("SELECT id FROM sources WHERE feed_url=%s", (feed_url,))
+                sid = cur.fetchone()["id"]
+
+                feed = feedparser.parse(feed_url)
                 for e in feed.entries:
                     title = (e.get("title") or "").strip()
                     link = e.get("link")
@@ -139,6 +139,91 @@ def rss_import():
 
             except Exception as e:
                 errors.append(f"[PHASE1:{name}] {repr(e)}")
+
+        # =============================
+        # PHASE 2 – Eisblog
+        # =============================
+        try:
+            name = "Eisblog"
+            feed_url = "https://eisblog.media/feed/"
+            KEYWORDS = ["löwen", "loewen", "frankfurt"]
+
+            cur.execute("""
+                INSERT INTO sources (name, feed_url)
+                VALUES (%s,%s)
+                ON CONFLICT (feed_url) DO NOTHING
+            """, (name, feed_url))
+
+            cur.execute("SELECT id FROM sources WHERE feed_url=%s", (feed_url,))
+            sid = cur.fetchone()["id"]
+
+            feed = feedparser.parse(feed_url)
+            for e in feed.entries:
+                title = (e.get("title") or "").strip()
+                link = e.get("link")
+                content = (e.get("summary") or "").strip()
+                text = f"{title} {content}".lower()
+
+                if not any(k in text for k in KEYWORDS):
+                    continue
+
+                cur.execute("""
+                    INSERT INTO news (title, content, source_url, source_id, category)
+                    VALUES (%s,%s,%s,%s,'loewen_frankfurt')
+                    ON CONFLICT DO NOTHING
+                """, (title, content, link, sid))
+
+                inserted += cur.rowcount
+
+        except Exception as e:
+            errors.append(f"[PHASE2:EISBLOG] {repr(e)}")
+
+        # =============================
+        # PHASE 3 – FNP / OP (HTML)
+        # =============================
+        SCRAPE_SOURCES = [
+            ("FNP", "https://www.fnp.de/sport/loewen-frankfurt/"),
+            ("OP-Online", "https://www.op-online.de/sport/loewen-frankfurt/"),
+        ]
+
+        headers = {"User-Agent": "LoewenNewsBot/1.0"}
+
+        for name, feed_url in SCRAPE_SOURCES:
+            try:
+                cur.execute("""
+                    INSERT INTO sources (name, feed_url)
+                    VALUES (%s,%s)
+                    ON CONFLICT (feed_url) DO NOTHING
+                """, (name, feed_url))
+
+                cur.execute("SELECT id FROM sources WHERE feed_url=%s", (feed_url,))
+                sid = cur.fetchone()["id"]
+
+                resp = requests.get(feed_url, headers=headers, timeout=8)
+                resp.raise_for_status()
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+
+                for a in soup.select("a[href]")[:20]:
+                    title = a.get_text(strip=True)
+                    link = a.get("href")
+
+                    if not title or "löwen" not in title.lower():
+                        continue
+
+                    if link.startswith("/"):
+                        link = feed_url.rstrip("/") + link
+
+                    cur.execute("""
+                        INSERT INTO news (title, source_url, source_id, category)
+                        VALUES (%s,%s,%s,'loewen_frankfurt')
+                        ON CONFLICT DO NOTHING
+                    """, (title, link, sid))
+
+                    inserted += cur.rowcount
+
+            except Exception as e:
+                errors.append(f"[PHASE3:{name}] {repr(e)}")
 
         conn.commit()
         cur.close()
