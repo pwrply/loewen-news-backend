@@ -241,3 +241,34 @@ def rss_import():
         "inserted": inserted,
         "errors": errors,
     }
+
+@app.get("/migrate/sources-source-url")
+def migrate_sources_add_source_url():
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        ALTER TABLE sources
+        ADD COLUMN IF NOT EXISTS source_url TEXT;
+    """)
+
+    # Unique-Constraint (falls noch nicht vorhanden)
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_constraint
+                WHERE conname = 'sources_source_url_unique'
+            ) THEN
+                ALTER TABLE sources
+                ADD CONSTRAINT sources_source_url_unique UNIQUE (source_url);
+            END IF;
+        END $$;
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {"migration": "sources.source_url added ✅"}
